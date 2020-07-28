@@ -1,0 +1,164 @@
+#!/usr/bin/stap --all-modules
+
+%{
+
+#include <linux/kernel.h>
+
+#include <linux/net.h>
+
+#include <linux/textsearch.h>
+
+#include <net/checksum.h>
+
+#include <linux/dma-mapping.h>
+
+#include <linux/netdev_features.h>
+
+#include <linux/skbuff.h>
+
+#include <uapi/linux/ip.h>
+
+#include <uapi/linux/udp.h>
+
+#include <uapi/linux/tcp.h>
+
+%}
+
+############################################################
+
+# dropwatch-plus.stp
+
+
+# Reports every 5 seconds with timestamp
+
+# Usage: stap -g --all-modules dropwatch-plus.stp //-g for guru mode
+
+############################################################
+
+function get_packet_info:string(skb:long)
+
+%{
+
+     int ret=-1;
+
+     unsigned int src_port = 0;
+
+     unsigned int dest_port = 0;
+
+     struct udphdr *udp_header;
+
+     struct tcphdr *tcp_header;
+
+     struct sk_buff *skb= (struct sk_buff *)STAP_ARG_skb;
+
+     struct iphdr *ip_header;
+
+     unsigned int src_ip=0,dest_ip=0;
+
+     if(!skb)
+
+     {
+
+         goto EXIT_F;
+
+     }
+
+     ip_header = (struct iphdr *)skb_network_header(skb);
+
+     if(!ip_header)
+
+     {
+
+       goto EXIT_F;
+
+     }
+
+     src_ip = (unsigned int)ip_header->saddr;
+
+     dest_ip = (unsigned int)ip_header->daddr;
+
+#if 0
+
+     if (ip_header->protocol==17) {
+
+            udp_header = (struct udphdr *)skb_transport_header(skb);
+
+            src_port = (unsigned int)ntohs(udp_header->source);
+
+        } else if (ip_header->protocol == 6) {
+
+            tcp_header = (struct tcphdr *)skb_transport_header(skb);
+
+            src_port = (unsigned int)ntohs(tcp_header->source);
+
+            dest_port = (unsigned int)ntohs(tcp_header->dest);
+
+        }
+
+     printk(KERN_INFO "OUT packet info: src ip: %u, src port: %u; dest ip: %u, dest port: %u; proto: %u\n", src_ip, src_port, dest_ip, dest_port, ip_header->protocol);
+
+#endif
+
+    // printk(KERN_DEBUG "IP addres = %pI4  DEST = %pI4\n", &src_ip, &dest_ip);
+
+EXIT_F:
+
+     snprintf(STAP_RETVALUE, MAXSTRINGLEN, "%d.%d.%d.%d",(unsigned int)((unsigned char *)&src_ip)[0],(unsigned int)((unsigned char *)&src_ip)[1],(unsigned int)((unsigned char *)&src_ip)[2],(unsigned int)((unsigned char *)&src_ip)[3]);
+
+%}
+
+# Array to hold the list of drop points we find
+
+global locations
+
+# Note when we turn the monitor on and off
+
+probe begin { printf("Monitoring for dropped packets\n") }
+
+probe end { printf("Stopping dropped packet monitor\n") }
+
+# increment a drop counter for every location we drop at
+
+probe kernel.trace("kfree_skb") {
+
+  SrcIp=get_packet_info($skb)
+
+  //if(SrcIp=="10.14.83.89")//src ip of packet is "10.14.83.89"
+
+ // printf("srcip:%s\r\n",SrcIp)
+
+  if(SrcIp==@1)
+
+  {
+
+    locations[$location] <<< 1 //systemtap Statistical aggregate
+
+    //if(symname($location)=="nf_hook_slow")//dump the backtrace if kfree_skb called by nf_hook_slow function
+
+          //print_backtrace();
+
+  }
+
+}
+
+# Every 5 seconds report our drop locations
+
+probe timer.sec(5)
+
+{
+
+//  printf("\n=== %s ===\n", ctime(gettimeofday_s()))
+
+  foreach (l in locations-) {
+
+    printf("\n=== %s ===\n", ctime(gettimeofday_s()))
+
+    printf("%d packets dropped at %x (%s)\n",
+
+           @count(locations[l]), l, symname(l))
+
+  }
+
+  delete locations
+
+}
